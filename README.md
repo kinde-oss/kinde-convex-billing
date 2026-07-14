@@ -58,7 +58,7 @@ This component owns all of that. Drop it in, mount the webhook, and your Convex 
 - [Webhook Events](#webhook-events)
 - [Database Schema](#database-schema)
 - [Customer IDs](#customer-ids)
-- [Using with kinde-sync](#using-with-kinde-sync)
+- [Using with kinde-convex-sync](#using-with-kinde-convex-sync)
 - [Testing](#testing)
 - [Limitations](#limitations)
 - [Troubleshooting](#troubleshooting)

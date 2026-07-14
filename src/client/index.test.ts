@@ -182,7 +182,7 @@ describe("KindeBilling webhookHandler", () => {
     expect(args).toMatchObject({ webhookId: "987654", customerId: "customer_abc" });
   });
 
-  test("prefers the webhook-id header over jti", async () => {
+  test("prefers a signed jti over the unsigned webhook-id header", async () => {
     mockJwtVerify.mockResolvedValue({
       payload: {
         jti: "evt_from_jti",
@@ -195,9 +195,45 @@ describe("KindeBilling webhookHandler", () => {
       ctx,
       postRequest("some.jwt.token", { "webhook-id": "hdr_123" }),
     );
+    // The header is attacker-controllable on a replayed JWT, so a signed jti
+    // must win — never let the unsigned header override it and bypass dedup.
+    expect(ctx.runMutation).toHaveBeenCalledTimes(1);
+    const [, args] = ctx.runMutation.mock.calls[0];
+    expect(args).toMatchObject({ webhookId: "evt_from_jti" });
+  });
+
+  test("uses the webhook-id header only when no signed id is present", async () => {
+    mockJwtVerify.mockResolvedValue({
+      payload: {
+        // No event_id, no jti — the unsigned header is the last-resort fallback.
+        type: "customer.plan_assigned",
+        data: { customer_id: "customer_abc" },
+      },
+    } as unknown as Awaited<ReturnType<typeof jose.jwtVerify>>);
+    const ctx: MockCtx = { runMutation: vi.fn().mockResolvedValue(null) };
+    await getHandler(makeClient())(
+      ctx,
+      postRequest("some.jwt.token", { "webhook-id": "hdr_123" }),
+    );
     expect(ctx.runMutation).toHaveBeenCalledTimes(1);
     const [, args] = ctx.runMutation.mock.calls[0];
     expect(args).toMatchObject({ webhookId: "hdr_123" });
+  });
+
+  test("dispatches a metered quantity of 0 (not dropped as falsy)", async () => {
+    mockJwtVerify.mockResolvedValue({
+      payload: {
+        jti: "evt_zero",
+        type: "customer.meter_usage_updated",
+        data: { customer_id: "customer_abc", meter_id: "api_calls", quantity: 0 },
+      },
+    } as unknown as Awaited<ReturnType<typeof jose.jwtVerify>>);
+    const ctx: MockCtx = { runMutation: vi.fn().mockResolvedValue(null) };
+    await getHandler(makeClient())(ctx, postRequest("some.jwt.token"));
+    expect(ctx.runMutation).toHaveBeenCalledTimes(1);
+    const [, args] = ctx.runMutation.mock.calls[0];
+    expect(args.meterId).toBe("api_calls");
+    expect(args.quantity).toBe(0);
   });
 
   test("returns 400 for a malformed payload (missing type/data)", async () => {

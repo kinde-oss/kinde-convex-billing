@@ -1,5 +1,5 @@
 import { convexTest } from "convex-test";
-import { expect, test } from "vitest";
+import { expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import schema from "./schema.js";
 
@@ -196,4 +196,39 @@ test("cleanupProcessedWebhooks prunes rows older than the retention window", asy
     now: eightDaysLater,
   });
   expect(pruned.deleted).toBe(1);
+});
+
+test("cleanupProcessedWebhooks self-drains a backlog larger than one batch", async () => {
+  // Fake timers so the runAfter(0) self-reschedule can be driven to completion.
+  vi.useFakeTimers();
+  try {
+    const t = convexTest(schema, modules);
+    // Seed 501 stale rows directly — one more than CLEANUP_BATCH_SIZE (500) — so
+    // a single batch can't clear them and the run must reschedule itself.
+    await t.run(async (ctx) => {
+      for (let i = 0; i < 501; i++) {
+        await ctx.db.insert("processedWebhooks", {
+          webhookId: `wh_backlog_${i}`,
+          processedAt: 1000,
+        });
+      }
+    });
+
+    const now = 1000 + 8 * 24 * 60 * 60 * 1000; // well past the 7-day window
+    const first = await t.mutation(internal.lib.cleanupProcessedWebhooks, {
+      now,
+    });
+    // First run clears a full batch and self-schedules the remainder.
+    expect(first.deleted).toBe(500);
+
+    // Drain the rescheduled run(s); the follow-up clears the final row and stops.
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
+
+    const remaining = await t.run(async (ctx) => {
+      return (await ctx.db.query("processedWebhooks").collect()).length;
+    });
+    expect(remaining).toBe(0);
+  } finally {
+    vi.useRealTimers();
+  }
 });

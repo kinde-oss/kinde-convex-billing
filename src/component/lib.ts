@@ -1,4 +1,5 @@
 import { v } from "convex/values";
+import { internal } from "./_generated/api.js";
 import {
   internalMutation,
   mutation,
@@ -309,7 +310,9 @@ export const handleWebhookEvent = mutation({
 const WEBHOOK_DEDUP_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 
 // Bound the work per invocation so a large backlog never exceeds a single
-// transaction's read/write limits; the cron reruns until the backlog drains.
+// transaction's read/write limits. When a run fills a whole batch it reschedules
+// itself immediately (see below), so the backlog drains fully without waiting
+// for the next 6-hour cron tick.
 const CLEANUP_BATCH_SIZE = 500;
 
 export const cleanupProcessedWebhooks = internalMutation({
@@ -323,6 +326,15 @@ export const cleanupProcessedWebhooks = internalMutation({
       .take(CLEANUP_BATCH_SIZE);
     for (const row of stale) {
       await ctx.db.delete(row._id);
+    }
+    // A full batch means there may be more stale rows than one transaction can
+    // safely delete. Self-schedule another run immediately so a large backlog
+    // drains completely instead of one batch per 6-hour cron interval. We pass
+    // the same `now` so the cutoff stays fixed across the whole drain.
+    if (stale.length === CLEANUP_BATCH_SIZE) {
+      await ctx.scheduler.runAfter(0, internal.lib.cleanupProcessedWebhooks, {
+        now: args.now,
+      });
     }
     return { deleted: stale.length };
   },

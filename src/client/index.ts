@@ -71,24 +71,27 @@ export class KindeBilling {
         });
       }
 
-      // Derive a stable dedup id for this delivery. Precedence: the Svix-style
-      // `webhook-id` request header, then the JWT `jti`, then the payload
-      // `event_id`. There is deliberately no Date.now() fallback: an event with
-      // none of these cannot be deduplicated, and minting a fresh id per retry
-      // would make every retry look new and defeat idempotency — so we refuse to
-      // process it (mirrors kinde-convex-sync's same decision).
-      const headerId = request.headers.get("webhook-id");
-      const jti = payload.jti;
+      // Derive a stable dedup id, preferring SIGNED sources. The payload
+      // `event_id` and JWT `jti` live inside the JWT we just verified, so they
+      // are trustworthy. The `webhook-id` request header is unsigned and
+      // attacker-controlled — on a replayed valid JWT an attacker could set a
+      // fresh header value to slip a duplicate past dedup — so it must never
+      // override a signed identifier and is only a last resort. There is
+      // deliberately no Date.now() fallback: an event with none of these cannot
+      // be deduplicated, and minting a fresh id per retry would make every retry
+      // look new and defeat idempotency (mirrors kinde-convex-sync's decision).
       const eventId = payload.event_id;
+      const jti = payload.jti;
+      const headerId = request.headers.get("webhook-id");
       let webhookId: string;
-      if (headerId) {
-        webhookId = headerId;
-      } else if (typeof jti === "string" && jti) {
-        webhookId = jti;
-      } else if (typeof eventId === "string" && eventId) {
+      if (typeof eventId === "string" && eventId) {
         webhookId = eventId;
       } else if (typeof eventId === "number") {
         webhookId = `${eventId}`;
+      } else if (typeof jti === "string" && jti) {
+        webhookId = jti;
+      } else if (headerId) {
+        webhookId = headerId;
       } else {
         return new Response(
           JSON.stringify({ error: "Missing webhook identifier" }),
@@ -144,7 +147,10 @@ export class KindeBilling {
         agreementId: (data.agreement_id as string) || undefined,
         currentPeriodEnd,
         meterId: (data.meter_id as string) || undefined,
-        quantity: (data.quantity as number) || undefined,
+        // Use a typeof check, not `|| undefined`: a valid metered quantity of 0
+        // is falsy and would otherwise be dropped.
+        quantity:
+          typeof data.quantity === "number" ? data.quantity : undefined,
       });
 
       return new Response(JSON.stringify({ success: true }), {

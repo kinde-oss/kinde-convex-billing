@@ -219,6 +219,9 @@ function PortalPanel() {
         </label>
         <input
           title="userAccessToken"
+          type="password"
+          autoComplete="off"
+          spellCheck={false}
           value={accessToken}
           onChange={(e) => setAccessToken(e.target.value)}
           placeholder="Paste the logged-in user's Kinde access token"
@@ -300,7 +303,6 @@ function EventLogPanel({ customerId }: { customerId: string }) {
 
 export default function App() {
   const [customerId, setCustomerId] = useState("customer_019865139a9b96b5bb666f8441f2d73c");
-  const [customerType, setCustomerType] = useState<"user" | "org">("user");
 
   return (
     <>
@@ -376,23 +378,6 @@ export default function App() {
                     fontSize: "0.8rem", fontFamily: "'JetBrains Mono', monospace", outline: "none",
                   }}
                 />
-              </div>
-              <div>
-                <label style={{ display: "block", fontSize: "0.68rem", color: "#9ca3af", marginBottom: 4 }}>Type</label>
-                <div style={{ display: "flex", gap: 6 }}>
-                  {(["user", "org"] as const).map((t) => (
-                    <button key={t} onClick={() => setCustomerType(t)} style={{
-                      padding: "0.5rem 1rem", borderRadius: 8,
-                      border: "1.5px solid #e5e7eb",
-                      background: customerType === t ? "#6366f1" : "#f9fafb",
-                      color: customerType === t ? "#fff" : "#374151",
-                      fontSize: "0.75rem", fontWeight: 600, cursor: "pointer",
-                      fontFamily: "'Sora', sans-serif", transition: "all 0.15s",
-                    }}>
-                      {t === "user" ? "B2C User" : "B2B Org"}
-                    </button>
-                  ))}
-                </div>
               </div>
             </div>
           </div>
