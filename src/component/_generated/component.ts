@@ -83,6 +83,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           planId?: string;
           planName?: string;
           quantity?: number;
+          webhookId: string;
         },
         null,
         Name

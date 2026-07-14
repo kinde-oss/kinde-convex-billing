@@ -39,4 +39,12 @@ export default defineSchema({
   })
     .index("by_customerId", ["customerId"])
     .index("by_customerId_meterId", ["customerId", "meterId"]),
+
+  processedWebhooks: defineTable({
+    webhookId: v.string(),
+    processedAt: v.number(),
+  })
+    .index("by_webhookId", ["webhookId"])
+    // Supports the retention cron that prunes rows older than the dedup window.
+    .index("by_processedAt", ["processedAt"]),
 });

@@ -26,6 +26,23 @@ export class KindeBilling {
     const component_ = component;
     const domain = options.KINDE_ISSUER_URL;
 
+    // Validate the issuer before building any URL, so a missing config throws a
+    // clear error instead of producing "undefined/.well-known/jwks.json" and
+    // crashing module analysis at deploy time.
+    if (!domain) {
+      throw new Error(
+        "KindeBilling: KINDE_ISSUER_URL is required to construct the client",
+      );
+    }
+
+    // Create the JWKS client once, keyed by the (validated) issuer domain, so
+    // jose's built-in key cache is reused across requests instead of being
+    // rebuilt (and refetched) on every webhook. Instantiating it inside the
+    // handler refetched Kinde's keys on every delivery, which timed out the
+    // first delivery with a ~5s AbortError and only succeeded on Kinde's retry.
+    const JWKS: ReturnType<typeof jose.createRemoteJWKSet> =
+      jose.createRemoteJWKSet(new URL(`${domain}/.well-known/jwks.json`));
+
     this.webhookHandler = httpActionGeneric(async (ctx, request) => {
       const token = await request.text();
       if (!token) {
@@ -35,12 +52,15 @@ export class KindeBilling {
         });
       }
 
-      const JWKS = jose.createRemoteJWKSet(
-        new URL(`${domain}/.well-known/jwks.json`),
-      );
-
       let payload: Record<string, unknown>;
       try {
+        // Verify the signature against the tenant's JWKS only — do NOT assert an
+        // `iss` claim. Kinde webhook JWTs do not carry an `iss` claim, so
+        // `jwtVerify(token, JWKS, { issuer })` fails on every real webhook with
+        // "missing required iss claim". The webhook is already tenant-bound by
+        // the JWKS URL we fetch keys from (derived from this deployment's
+        // KINDE_ISSUER_URL), so signature verification alone is the correct
+        // binding here. `iss` checks belong on access tokens, not on webhooks.
         const result = await jose.jwtVerify(token, JWKS);
         payload = result.payload as Record<string, unknown>;
       } catch (err) {
@@ -49,6 +69,31 @@ export class KindeBilling {
           status: 401,
           headers: { "Content-Type": "application/json" },
         });
+      }
+
+      // Derive a stable dedup id for this delivery. Precedence: the Svix-style
+      // `webhook-id` request header, then the JWT `jti`, then the payload
+      // `event_id`. There is deliberately no Date.now() fallback: an event with
+      // none of these cannot be deduplicated, and minting a fresh id per retry
+      // would make every retry look new and defeat idempotency — so we refuse to
+      // process it (mirrors kinde-convex-sync's same decision).
+      const headerId = request.headers.get("webhook-id");
+      const jti = payload.jti;
+      const eventId = payload.event_id;
+      let webhookId: string;
+      if (headerId) {
+        webhookId = headerId;
+      } else if (typeof jti === "string" && jti) {
+        webhookId = jti;
+      } else if (typeof eventId === "string" && eventId) {
+        webhookId = eventId;
+      } else if (typeof eventId === "number") {
+        webhookId = `${eventId}`;
+      } else {
+        return new Response(
+          JSON.stringify({ error: "Missing webhook identifier" }),
+          { status: 400, headers: { "Content-Type": "application/json" } },
+        );
       }
 
       const eventType = (payload.type || payload.event_type) as string;
@@ -89,6 +134,7 @@ export class KindeBilling {
         : undefined;
 
       await ctx.runMutation(component_.lib.handleWebhookEvent, {
+        webhookId,
         eventType,
         customerId,
         customerType: customerType as "user" | "org",

@@ -190,6 +190,13 @@ export default http;
 
 ## Usage
 
+There are two equivalent ways to read billing state, and the examples below use the first:
+
+- **Via a `KindeBilling` instance** — `kindeBilling.hasActivePlan(ctx, { customerId })`. Convenient when your app already constructs the client (see [Setup](#setup)). The constructor validates `KINDE_ISSUER_URL`, so only instantiate it where that env var is set.
+- **Directly against the component** — `ctx.runQuery(components.convexKindeBilling.lib.hasActivePlan, { customerId })`. Use this in plain read queries where you don't want to construct a client (no `KINDE_ISSUER_URL` needed). This is what the [example app](./example) and the [Testing](#testing) snippets use.
+
+Both hit the same component queries and return the same values; pick per call site.
+
 ### Check if a customer has an active plan
 
 ```ts
@@ -381,15 +388,46 @@ import { PortalLink } from "@kinde-oss/kinde-auth-react";
 
 ### `ManageBillingButton`
 
-Drop-in button that calls `getPortalUrl` using the user's access token and redirects to the portal.
+Drop-in button for your React app. It calls a **Convex action** you expose (via `useAction`); that action calls Kinde's Account API **server-side** with the user's access token and returns a one-time portal URL, which the button redirects to. The Account API call runs on the server — not in the browser — so the access token is never subject to CORS or exposed to client code.
+
+**1. Expose a `getPortalUrl` action** in your Convex app (`convex/billing.ts`):
+
+```ts
+import { action } from "./_generated/server";
+import { components } from "./_generated/api";
+import { KindeBilling } from "@kinde-oss/kinde-convex-billing";
+import { v } from "convex/values";
+
+export const getPortalUrl = action({
+  args: {
+    userAccessToken: v.string(),
+    returnUrl: v.optional(v.string()),
+    subNav: v.optional(v.string()),
+  },
+  returns: v.object({ url: v.string() }),
+  handler: async (_ctx, args) => {
+    const kindeBilling = new KindeBilling(components.convexKindeBilling, {
+      KINDE_ISSUER_URL: process.env.KINDE_ISSUER_URL!,
+    });
+    const url = await kindeBilling.getPortalUrl(args.userAccessToken, {
+      returnUrl: args.returnUrl,
+      subNav: args.subNav,
+    });
+    return { url };
+  },
+});
+```
+
+**2. Render the button**, passing that action as `getPortalUrl` and the logged-in user's Kinde access token (from your auth flow, e.g. `getToken()` in the Kinde React SDK):
 
 ```tsx
 import { ManageBillingButton } from "@kinde-oss/kinde-convex-billing/react";
+import { api } from "../convex/_generated/api";
 
 function SettingsPage({ userAccessToken }: { userAccessToken: string }) {
   return (
     <ManageBillingButton
-      kindeBilling={kindeBilling}
+      getPortalUrl={api.billing.getPortalUrl}
       userAccessToken={userAccessToken}
       returnUrl={window.location.href}
     >
@@ -399,13 +437,16 @@ function SettingsPage({ userAccessToken }: { userAccessToken: string }) {
 }
 ```
 
+For the B2B org billing portal, pass `subNav="organization_billing"`.
+
 Props:
 
 | Prop | Type | Required | Description |
 |||||
-| `kindeBilling` | `KindeBilling` | ✓ | Your `KindeBilling` instance |
-| `userAccessToken` | `string` | ✓ | The logged-in user's Kinde access token |
+| `getPortalUrl` | `FunctionReference<"action">` | ✓ | Reference to your Convex `getPortalUrl` action, e.g. `api.billing.getPortalUrl` |
+| `userAccessToken` | `string` | ✓ | The logged-in user's Kinde access token, forwarded to the action |
 | `returnUrl` | `string` | | URL to return to after the portal |
+| `subNav` | `string` | | Portal sub-navigation, e.g. `"organization_billing"` for B2B org billing |
 | `children` | `ReactNode` | | Button label (default: `"Manage Billing"`) |
 | `className` | `string` | | CSS class name |
 
@@ -436,7 +477,7 @@ const kindeBilling = new KindeBilling(components.convexKindeBilling, {
 | `getPortalUrl` | async | `(userAccessToken, { returnUrl?, subNav? })` | `string` | Generate a one-time self-serve portal URL using the user's access token |
 | `getSubscription` | query | `{ customerId }` | `Subscription \| null` | Full subscription record |
 | `hasActivePlan` | query | `{ customerId }` | `boolean` | Whether customer has `status === "active"` |
-| `hasFeature` | query | `{ customerId, featureKey }` | `boolean` | Whether customer is active and on a plan matching featureKey |
+| `hasFeature` | query | `{ customerId, featureKey }` | `boolean` | Whether customer is active and `planId` or `planName` contains featureKey |
 | `getActivePlan` | query | `{ customerId }` | `PlanSummary \| null` | Current plan name, ID, and period end |
 | `listBillingEvents` | query | `{ customerId, limit? }` | `BillingEvent[]` | Billing webhook audit log, newest first |
 | `getUsage` | query | `{ customerId, meterId, limit? }` | `UsageRecord[]` | Metered usage records, newest first |
@@ -519,11 +560,17 @@ All 8 Kinde billing webhook events are handled automatically. Every event is wri
 
 ### How webhook verification works
 
-Kinde billing webhooks are RS256-signed JWTs. The component uses your `KINDE_ISSUER_URL` to fetch Kinde's public keys from `{KINDE_ISSUER_URL}/.well-known/jwks.json` and verifies the signature using `jose`. No webhook secret to configure, rotate, or leak.
+Kinde billing webhooks are RS256-signed JWTs. The component uses your `KINDE_ISSUER_URL` to fetch Kinde's public keys from `{KINDE_ISSUER_URL}/.well-known/jwks.json` and verifies the signature using `jose`. The JWKS client is created once when you construct `KindeBilling` (not per request), so `jose`'s key cache is reused across deliveries instead of refetching keys every time. No webhook secret to configure, rotate, or leak.
+
+### Deduplication and retries
+
+Kinde retries a webhook whenever your endpoint doesn't return 200 — immediately, then after 5s, 30s, and so on, for up to ~24 hours. To stop retries from double-writing the audit log or re-applying subscription changes, every delivery is deduplicated by a stable id derived, in order of preference, from the `webhook-id` request header, the JWT `jti`, or the payload `event_id`. A delivery with none of these can't be deduplicated and is rejected with `400 "Missing webhook identifier"` rather than processed under a made-up id.
+
+That id is recorded in the component's `processedWebhooks` table **before any other write**, so a repeat delivery with the same id is a no-op success. A retention cron (`cleanupProcessedWebhooks`, every 6 hours) prunes these dedup records after 7 days — comfortably past Kinde's retry window — so the table can't grow unbounded.
 
 ## Database Schema
 
-Three isolated tables, prefixed with `convexKindeBilling:` in the Convex dashboard.
+Four isolated tables, prefixed with `convexKindeBilling:` in the Convex dashboard.
 
 ### `subscriptions`
 
@@ -557,6 +604,15 @@ Three isolated tables, prefixed with `convexKindeBilling:` in the Convex dashboa
 | `quantity` | `number` | Usage quantity |
 | `recordedAt` | `number` | Unix ms timestamp |
 
+### `processedWebhooks`
+
+Deduplication ledger — one row per processed webhook delivery. A retried delivery with the same id is recognised and skipped so it never double-writes. Pruned after 7 days by the `cleanupProcessedWebhooks` retention cron.
+
+| Field | Type | Description |
+||||
+| `webhookId` | `string` | Stable delivery id from the `webhook-id` header, JWT `jti`, or `event_id` |
+| `processedAt` | `number` | Unix ms timestamp the delivery was first processed |
+
 ## Customer IDs
 
 Kinde billing uses `customer_id` — a separate identifier from the auth `user_id` (`kp_xxx`). The component detects the correct ID automatically from the webhook payload:
@@ -585,55 +641,89 @@ export const getUserWithBilling = query({
 
 ## Testing
 
-This package exports a `src/test.ts` helper for use with [`convex-test`](https://www.npmjs.com/package/convex-test). It re-exports the component schema so you can write unit tests against your billing logic without a live Convex deployment.
+This package exports a `register()` helper (from `@kinde-oss/kinde-convex-billing/test`) for use with [`convex-test`](https://www.npmjs.com/package/convex-test). It mounts the component — its schema **and** functions — into your test deployment, so you can drive billing logic without a live Convex deployment.
 
+The component's functions are **not** on your app's `api` (they live inside the component), so call them through the component reference: `components.convexKindeBilling.lib.*`. Register the component with `register(t)`, then dispatch webhooks and query state exactly as the live handler does. Every `handleWebhookEvent` call needs a `webhookId` — the component deduplicates on it, so a retried delivery with the same id is a no-op.
 
 ```ts
 import { convexTest } from "convex-test";
 import { expect, test } from "vitest";
-import { api } from "./_generated/api";
-import schema from "./schema.js";
+import { register } from "@kinde-oss/kinde-convex-billing/test";
+import { components } from "./_generated/api";
+import schema from "./schema";
 
 const modules = import.meta.glob("./**/*.ts");
 
 test("no active plan before any billing events", async () => {
   const t = convexTest(schema, modules);
-  const result = await t.query(api.lib.hasActivePlan, { customerId: "kp_user123" });
+  register(t); // mount the convexKindeBilling component
+  const result = await t.query(components.convexKindeBilling.lib.hasActivePlan, {
+    customerId: "customer_abc123",
+  });
   expect(result).toBe(false);
 });
 
 test("active plan after plan_assigned event", async () => {
   const t = convexTest(schema, modules);
-  await t.mutation(api.lib.handleWebhookEvent, {
+  register(t);
+  await t.mutation(components.convexKindeBilling.lib.handleWebhookEvent, {
+    webhookId: "evt_assigned_1",
     eventType: "customer.plan_assigned",
-    customerId: "kp_user123",
+    customerId: "customer_abc123",
     customerType: "user",
     payload: "{}",
-    planId: "plan_pro",
+    planId: "customer_pro_plan",
     planName: "Pro",
   });
-  const result = await t.query(api.lib.hasActivePlan, { customerId: "kp_user123" });
+  const result = await t.query(components.convexKindeBilling.lib.hasActivePlan, {
+    customerId: "customer_abc123",
+  });
   expect(result).toBe(true);
 });
 
 test("cancelled after agreement_cancelled", async () => {
   const t = convexTest(schema, modules);
-  await t.mutation(api.lib.handleWebhookEvent, {
+  register(t);
+  await t.mutation(components.convexKindeBilling.lib.handleWebhookEvent, {
+    webhookId: "evt_assigned_2",
     eventType: "customer.plan_assigned",
-    customerId: "kp_user123",
+    customerId: "customer_abc123",
     customerType: "user",
     payload: "{}",
-    planId: "plan_pro",
+    planId: "customer_pro_plan",
     planName: "Pro",
   });
-  await t.mutation(api.lib.handleWebhookEvent, {
+  await t.mutation(components.convexKindeBilling.lib.handleWebhookEvent, {
+    webhookId: "evt_cancelled_1",
     eventType: "customer.agreement_cancelled",
-    customerId: "kp_user123",
+    customerId: "customer_abc123",
     customerType: "user",
     payload: "{}",
   });
-  const result = await t.query(api.lib.hasActivePlan, { customerId: "kp_user123" });
+  const result = await t.query(components.convexKindeBilling.lib.hasActivePlan, {
+    customerId: "customer_abc123",
+  });
   expect(result).toBe(false);
+});
+
+test("a retried delivery with the same webhookId is deduplicated", async () => {
+  const t = convexTest(schema, modules);
+  register(t);
+  const delivery = {
+    webhookId: "evt_retry_1",
+    eventType: "customer.payment_succeeded",
+    customerId: "customer_abc123",
+    customerType: "user" as const,
+    payload: "{}",
+  };
+  await t.mutation(components.convexKindeBilling.lib.handleWebhookEvent, delivery);
+  // Same webhookId → Kinde retry → no-op, so the audit log holds one row, not two.
+  await t.mutation(components.convexKindeBilling.lib.handleWebhookEvent, delivery);
+  const events = await t.query(
+    components.convexKindeBilling.lib.listBillingEvents,
+    { customerId: "customer_abc123" },
+  );
+  expect(events).toHaveLength(1);
 });
 ```
 
@@ -649,16 +739,29 @@ test("cancelled after agreement_cancelled", async () => {
 
 **`getPortalUrl` requires a logged-in user's access token.** The user must be authenticated with Kinde.
 
+**`hasFeature` is substring matching, not entitlements.** `hasFeature` returns true when the customer is active and `featureKey` is a substring of the `planId` or `planName` stored from webhooks. It does **not** call Kinde's feature-flag or entitlements API. Matching on `planId` is case-sensitive; matching on `planName` is case-insensitive. For real entitlement checks, gate on the plan id/name explicitly or use Kinde's entitlements API directly.
+
 ## Troubleshooting
 
-**Webhook returns 401 "Invalid token"**
-JWT verification failed. Make sure `KINDE_ISSUER_URL` is set correctly in your Convex dashboard under **Settings → Environment Variables** and matches your Kinde domain exactly.
+> Error strings below are quoted exactly as the component throws or returns them.
 
-**Webhook returns 400 "Missing event data"**
-Check you've pointed Kinde's billing webhooks (not auth webhooks) at this endpoint.
+**Deploy/construction fails with `KindeBilling: KINDE_ISSUER_URL is required to construct the client`**
+`KindeBilling` was constructed with no `KINDE_ISSUER_URL`. Set it — `npx convex env set KINDE_ISSUER_URL https://yourdomain.kinde.com` — and make sure it's read wherever you `new KindeBilling(...)`.
 
-**Webhook returns 400 "Missing customer ID"**
-The payload doesn't contain `customer_id`, `org_code`, or `user_id`. Check the event type is a billing event and the webhook is correctly configured in Kinde.
+**Webhook returns 400 `Missing token`**
+The request body was empty. Kinde sends the signed JWT as the raw request body — check the endpoint URL and that Kinde is actually reaching it.
+
+**Webhook returns 401 `Invalid token`**
+JWT signature verification failed. Make sure `KINDE_ISSUER_URL` is set correctly in your Convex dashboard under **Settings → Environment Variables** and matches your Kinde domain exactly.
+
+**Webhook returns 400 `Missing webhook identifier`**
+The verified payload carried no `webhook-id` header, JWT `jti`, or `event_id`, so the delivery can't be deduplicated and is rejected rather than processed under a made-up id. Genuine Kinde webhooks always carry one of these; if you hit this, the request probably isn't a real Kinde webhook.
+
+**Webhook returns 400 `Invalid payload`**
+The payload is missing its `type`/`event_type` or its `data`. Check you've pointed Kinde's billing webhooks (not auth webhooks) at this endpoint.
+
+**Webhook returns 400 `Missing customer ID`**
+The payload doesn't contain `org_code`, `customer_id`, or `user_id`. Check the event type is a billing event and the webhook is correctly configured in Kinde.
 
 **Webhook returns 500**
 Check your Convex function logs:
@@ -676,8 +779,8 @@ Confirm all 8 billing events are selected in Kinde's webhook settings.
 **Plan name shows as undefined**
 Make sure you're on the latest version — earlier versions didn't extract plan name from the nested `data.plan` object in Kinde's payload.
 
-**`getPortalUrl` returns 401**
-The user's access token is expired or invalid. Re-authenticate the user with Kinde and retry.
+**`getPortalUrl` throws `Failed to get portal link: 401 ...`**
+Kinde's Account API rejected the user's access token (expired or invalid). Re-authenticate the user with Kinde and retry. The thrown message includes the status code and Kinde's response body.
 
 **Component tables not visible in the Convex dashboard**
 Use the component selector dropdown at the top of the Data tab to switch to the `convexKindeBilling` namespace.

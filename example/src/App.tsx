@@ -1,6 +1,7 @@
 import { useQuery } from "convex/react";
 import { api } from "../convex/_generated/api";
 import { useState } from "react";
+import { ManageBillingButton } from "../../src/react/index.js";
 
 
 const STATUS_COLOR: Record<string, string> = {
@@ -195,6 +196,57 @@ function UsagePanel({ customerId }: { customerId: string }) {
   );
 }
 
+function PortalPanel() {
+  // In production this token comes from your Kinde auth session (e.g. the Kinde
+  // React SDK's getToken()). The demo takes it from an input so the full path —
+  // button → getPortalUrl action → Kinde Account API → redirect — is exercisable.
+  const [accessToken, setAccessToken] = useState("");
+
+  return (
+    <div style={{ background: "#fff", border: "1.5px solid #e5e7eb", borderRadius: 16, overflow: "hidden", marginBottom: "1rem" }}>
+      <div style={{
+        padding: "1rem 1.25rem", background: "#f9fafb", borderBottom: "1px solid #e5e7eb",
+        display: "flex", alignItems: "center", justifyContent: "space-between",
+      }}>
+        <div style={{ fontWeight: 700, fontSize: "0.85rem", color: "#111827" }}>Self-Serve Portal</div>
+        <span style={{ fontSize: "0.68rem", color: "#9ca3af", fontFamily: "'JetBrains Mono', monospace" }}>
+          getPortalUrl() action → Kinde Account API
+        </span>
+      </div>
+      <div style={{ padding: "1.25rem" }}>
+        <label style={{ display: "block", fontSize: "0.68rem", color: "#9ca3af", marginBottom: 4 }}>
+          User access token
+        </label>
+        <input
+          title="userAccessToken"
+          value={accessToken}
+          onChange={(e) => setAccessToken(e.target.value)}
+          placeholder="Paste the logged-in user's Kinde access token"
+          style={{
+            width: "100%", padding: "0.55rem 0.75rem", marginBottom: "0.85rem",
+            borderRadius: 8, border: "1.5px solid #e5e7eb",
+            background: "#f9fafb", color: "#111827",
+            fontSize: "0.8rem", fontFamily: "'JetBrains Mono', monospace", outline: "none",
+          }}
+        />
+        <ManageBillingButton
+          getPortalUrl={api.example.getPortalUrl}
+          userAccessToken={accessToken}
+          returnUrl={window.location.href}
+          className="portal-btn"
+        >
+          Manage Billing →
+        </ManageBillingButton>
+        <p style={{ fontSize: "0.68rem", color: "#9ca3af", marginTop: "0.85rem", lineHeight: 1.5 }}>
+          The button calls the <code>getPortalUrl</code> Convex action via <code>useAction</code>,
+          which calls Kinde's Account API server-side with this token and redirects to the
+          returned portal URL.
+        </p>
+      </div>
+    </div>
+  );
+}
+
 function EventLogPanel({ customerId }: { customerId: string }) {
   const events = useQuery(api.example.listBillingEvents, { customerId });
 
@@ -266,6 +318,8 @@ export default function App() {
         ::-webkit-scrollbar{width:4px} ::-webkit-scrollbar-track{background:transparent} ::-webkit-scrollbar-thumb{background:#cbd5e1;border-radius:2px}
         button:hover:not(:disabled){ opacity:0.85; }
         a:hover { opacity: 0.85; }
+        .portal-btn{ padding:0.6rem 1.1rem; border-radius:8px; border:none; background:#6366f1; color:#fff; font-size:0.8rem; font-weight:600; cursor:pointer; font-family:'Sora',sans-serif; }
+        .portal-btn:disabled{ opacity:0.6; cursor:default; }
       `}</style>
 
       <div style={{ width: "100%", minHeight: "100vh", background: "#f1f5f9", display: "flex", justifyContent: "center" }}>
@@ -349,8 +403,11 @@ export default function App() {
           <div style={{ animation: "fadeUp 0.4s ease 0.2s both" }}>
             <UsagePanel customerId={customerId} />
           </div>
-
           <div style={{ animation: "fadeUp 0.4s ease 0.25s both" }}>
+            <PortalPanel />
+          </div>
+
+          <div style={{ animation: "fadeUp 0.4s ease 0.3s both" }}>
             <EventLogPanel customerId={customerId} />
           </div>
 
