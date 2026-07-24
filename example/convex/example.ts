@@ -116,7 +116,8 @@ export const simulateEvent = internalMutation({
   handler: async (ctx, args) => {
     await ctx.runMutation(components.convexKindeBilling.lib.handleWebhookEvent, {
       // Clearly-simulated, unique dedup id so each demo dispatch is processed
-      // (real deliveries derive this from the webhook-id header / jti / event_id).
+      // (real deliveries prefer the signed event_id / jti from the verified JWT,
+      // and fall back to the unsigned webhook-id header only if neither is set).
       webhookId: `sim_${crypto.randomUUID()}`,
       eventType: args.eventType,
       customerId: args.customerId,

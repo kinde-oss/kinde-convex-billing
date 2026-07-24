@@ -564,7 +564,7 @@ Kinde billing webhooks are RS256-signed JWTs. The component uses your `KINDE_ISS
 
 ### Deduplication and retries
 
-Kinde retries a webhook whenever your endpoint doesn't return 200 — immediately, then after 5s, 30s, and so on, for up to ~24 hours. To stop retries from double-writing the audit log or re-applying subscription changes, every delivery is deduplicated by a stable id derived, in order of preference, from the `webhook-id` request header, the JWT `jti`, or the payload `event_id`. A delivery with none of these can't be deduplicated and is rejected with `400 "Missing webhook identifier"` rather than processed under a made-up id.
+Kinde retries a webhook whenever your endpoint doesn't return 200 — immediately, then after 5s, 30s, and so on, for up to ~24 hours. To stop retries from double-writing the audit log or re-applying subscription changes, every delivery is deduplicated by a stable id derived, in order of preference, from the payload `event_id`, the JWT `jti`, or — only as a last resort — the `webhook-id` request header. The first two are read from the JWT the component has already verified, so they're signed and trustworthy; the `webhook-id` header is unsigned and attacker-controlled, so it can never override a signed identifier. (If it could, a replayed valid JWT sent with a fresh header value would slip past dedup as a new event.) A delivery with none of these can't be deduplicated and is rejected with `400 "Missing webhook identifier"` rather than processed under a made-up id.
 
 That id is recorded in the component's `processedWebhooks` table **before any other write**, so a repeat delivery with the same id is a no-op success. A retention cron (`cleanupProcessedWebhooks`, every 6 hours) prunes these dedup records after 7 days — comfortably past Kinde's retry window — so the table can't grow unbounded.
 
@@ -610,7 +610,7 @@ Deduplication ledger — one row per processed webhook delivery. A retried deliv
 
 | Field | Type | Description |
 ||||
-| `webhookId` | `string` | Stable delivery id from the `webhook-id` header, JWT `jti`, or `event_id` |
+| `webhookId` | `string` | Stable delivery id from the signed payload `event_id`, the signed JWT `jti`, or — last resort — the unsigned `webhook-id` header |
 | `processedAt` | `number` | Unix ms timestamp the delivery was first processed |
 
 ## Customer IDs
@@ -755,7 +755,7 @@ The request body was empty. Kinde sends the signed JWT as the raw request body �
 JWT signature verification failed. Make sure `KINDE_ISSUER_URL` is set correctly in your Convex dashboard under **Settings → Environment Variables** and matches your Kinde domain exactly.
 
 **Webhook returns 400 `Missing webhook identifier`**
-The verified payload carried no `webhook-id` header, JWT `jti`, or `event_id`, so the delivery can't be deduplicated and is rejected rather than processed under a made-up id. Genuine Kinde webhooks always carry one of these; if you hit this, the request probably isn't a real Kinde webhook.
+The delivery carried no payload `event_id`, no JWT `jti`, and no `webhook-id` header — checked in that order, since the first two are signed and the header isn't — so it can't be deduplicated and is rejected rather than processed under a made-up id. Genuine Kinde webhooks always carry one of these; if you hit this, the request probably isn't a real Kinde webhook.
 
 **Webhook returns 400 `Invalid payload`**
 The payload is missing its `type`/`event_type` or its `data`. Check you've pointed Kinde's billing webhooks (not auth webhooks) at this endpoint.
