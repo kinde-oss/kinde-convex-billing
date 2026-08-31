@@ -23,3 +23,12 @@ coverage/
 
 # ---------------------------------------------------------------------
 # Add specific rules here…
+
+# Component-specific rules
+*.local
+*.tgz
+*.tsbuildinfo
+.eslintcache
+dist-ssr
+explorations
+/docs/.vitepress/cache
